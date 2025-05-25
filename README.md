@@ -17,10 +17,12 @@ We will **not** extend to masked language modeling (MLM) or factual completion t
 
 ## Key Resources
 
-- **Original Paper**: [Understanding by Understanding Not](https://arxiv.org/abs/2305.14027)
-- **GLUE Benchmark**: [GLUE](https://gluebenchmark.com/)
-- **SQuAD Dataset**: [SQuAD](https://rajpurkar.github.io/SQuAD-explorer/)
+- **Original Paper**: [Understanding by Understanding Not](https://aclanthology.org/2021.naacl-main.102/)
+- **SNLI Dataset**: [SNLI](https://nlp.stanford.edu/projects/snli/)
+- **MNLI Dataset**: [MNLI](https://cims.nyu.edu/~sbowman/multinli/)
+- **SQuAD Dataset**: [SQuAD 1.1](https://rajpurkar.github.io/SQuAD-explorer/)
 
+NOTE: All datasets are available in HuggingFace's datasets and are called from there
 ---
 
 ## Next Steps
@@ -37,6 +39,15 @@ We will **not** extend to masked language modeling (MLM) or factual completion t
    - Optionally test the model’s performance on a subset of QA-to-TE converted examples.
 
 ---
+
+## Setup
+
+1. Build your virtual environment:
+```bash
+python -m venv venv
+venv\Scripts\activate  # On Windows
+pip install -r requirements.txt
+```
 
 ## References
 
