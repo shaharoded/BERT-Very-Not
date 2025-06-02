@@ -25,6 +25,28 @@ We will **not** extend to masked language modeling (MLM) or factual completion t
 NOTE: All datasets are available in HuggingFace's datasets and are called from there
 ---
 
+## Conversion of QA to TE-style Pairs
+We convert SQuAD QA pairs into textual entailment (TE) format by treating the context as the premise and the question as the hypothesis.
+
+The labeling logic is:
+
+| **Condition**	| **TE Label** |
+| The answer text appears in the context	| `entailment (0)`|
+| The answer text does not appear	| `contradiction (2)` | 
+
+This conversion is a heuristic:
+
+- SQuAD does not contain explicit contradictions or temporally accurate context.
+- Neutral cases are not reliably distinguishable, so we do not use the neutral (1) label.
+- The conversion works best for weakly supervised fine-tuning.
+
+---
+
+## Negation Augmentation Methods
+TO-DO 
+
+---
+
 ## Next Steps
 
 1. **Data Preparation**:
