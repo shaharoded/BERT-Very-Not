@@ -30,9 +30,10 @@ We convert SQuAD QA pairs into textual entailment (TE) format by treating the co
 
 The labeling logic is:
 
-| **Condition**	| **TE Label** |
-| The answer text appears in the context	| `entailment (0)`|
-| The answer text does not appear	| `contradiction (2)` | 
+| **Condition**                                | **TE Label**         |
+|---------------------------------------------|----------------------|
+| The answer text appears in the context       | `entailment (0)`     |
+| The answer text does not appear in the text  | `contradiction (2)`  |
 
 This conversion is a heuristic:
 
