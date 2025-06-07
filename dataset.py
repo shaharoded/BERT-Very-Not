@@ -3,7 +3,8 @@ import pickle
 import random
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
-
+import openai
+import time
 from datasets import load_dataset  # Hugging Face datasets
 from tqdm import tqdm
 
@@ -15,6 +16,10 @@ import random
 import re
 from typing import List, Dict, Any
 import spacy
+
+import spacy.cli
+spacy.cli.download("en_core_web_sm")
+
 
 nlp = spacy.load("en_core_web_sm")
 
@@ -60,38 +65,84 @@ class Augmenter:
 
     def generate_negated_contradictions(self, data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Generates contradiction examples by negating the original answer
-        Assumes original hypothesis is a question and answer exists in premise.
-
-        Returns a list of added contradiction examples.
+        Generates contradiction examples by identifying named entities in the premise and negating them within the hypothesis.
+        Works best when the hypothesis is likely referring to a specific entity in the premise.
         """
         augmented = []
 
         for item in data:
-            premise = item["premise"]
-            hypothesis = item["hypothesis"]
-            label = item["label"]
-
-            if label != 0:
-                continue  # Only augment entailment pairs
-
-            # Attempt to extract the answer from premise
-            match = re.search(r"(?<=\bWho|What|When|Where|Which|How)\b.*\?", hypothesis, re.IGNORECASE)
-            if not match:
+            if item["label"] != 0:
                 continue
 
-            # Try to find named entities in the context to negate
+            premise = item["premise"]
+            hypothesis = item["hypothesis"]
+
             doc = nlp(premise)
-            ents = [ent.text for ent in doc.ents if ent.label_ in ["PERSON", "ORG", "GPE", "DATE"]]
+            ents = [ent.text for ent in doc.ents if ent.label_ in {"PERSON", "ORG", "GPE", "DATE"}]
 
             for ent in ents:
-                if ent in premise:
+                if ent in hypothesis:
+                    negated_hypothesis = hypothesis.replace(ent, f"not {ent}")
                     augmented.append({
                         "premise": premise,
-                        "hypothesis": f"It was not {ent}.",
+                        "hypothesis": negated_hypothesis,
                         "label": 2  # contradiction
                     })
-                    break  # one augmentation per item
+                    break
+
+        return augmented
+
+    def generate_negated_contradictions_llm(
+            data: List[Dict[str, Any]],
+            openai_api_key: str,
+            model: str = "gpt-4o-mini"
+    ) -> List[Dict[str, Any]]:
+        """
+        Uses an LLM (OpenAI API) to generate contradiction examples by rewriting hypotheses into their negated form.
+
+        Parameters:
+        - data: list of dicts with "premise", "hypothesis", and "label"
+        - openai_api_key: your OpenAI API key as a string
+        - model: OpenAI model name (default: gpt-4)
+
+        Returns:
+        - list of new contradiction-labeled examples
+        """
+        openai.api_key = openai_api_key
+        augmented = []
+
+        for item in data:
+            if item["label"] != 0:
+                continue
+
+            premise = item["premise"]
+            hypothesis = item["hypothesis"]
+
+            prompt = (
+                "Rewrite the following hypothesis so that it contradicts the premise, "
+                "while keeping the grammar natural and fluent.\n\n"
+                f"Premise: {premise}\n"
+                f"Hypothesis: {hypothesis}\n"
+                f"Contradiction:"
+            )
+
+            try:
+                response = openai.ChatCompletion.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.2,
+                )
+                negated_hypothesis = response["choices"][0]["message"]["content"].strip()
+
+                augmented.append({
+                    "premise": premise,
+                    "hypothesis": negated_hypothesis,
+                    "label": 2  # contradiction
+                })
+
+            except Exception as e:
+                print(f"[OpenAI error] Skipped example due to: {e}")
+                time.sleep(1)  # Optional rate limit handling
 
         return augmented
 
@@ -314,7 +365,7 @@ class DatasetBuilder:
             random.shuffle(combined)
 
         return combined
-    
+
 
 class TEDataset(Dataset):
     """
