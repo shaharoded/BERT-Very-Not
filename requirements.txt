@@ -2,4 +2,5 @@ datasets
 tqdm
 torch
 transformers
-spacy
+openai==0.28
+# spacy

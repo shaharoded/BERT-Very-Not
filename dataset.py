@@ -13,15 +13,12 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import BertTokenizer
 
 import random
-import re
 from typing import List, Dict, Any
-import spacy
 
-import spacy.cli
-spacy.cli.download("en_core_web_sm")
-
-
-nlp = spacy.load("en_core_web_sm")
+# import spacy
+# import spacy.cli
+# spacy.cli.download("en_core_web_sm")
+# nlp = spacy.load("en_core_web_sm")
 
 
 @dataclass
@@ -111,7 +108,7 @@ class Augmenter:
         openai.api_key = openai_api_key
         augmented = []
 
-        for item in data:
+        for item in tqdm(data, desc="LLM Augmentation"):
             if item["label"] != 0:
                 continue
 
@@ -133,16 +130,15 @@ class Augmenter:
                     temperature=0.2,
                 )
                 negated_hypothesis = response["choices"][0]["message"]["content"].strip()
-
                 augmented.append({
                     "premise": premise,
                     "hypothesis": negated_hypothesis,
-                    "label": 2  # contradiction
+                    "label": 2
                 })
 
             except Exception as e:
                 print(f"[OpenAI error] Skipped example due to: {e}")
-                time.sleep(1)  # Optional rate limit handling
+                time.sleep(1)
 
         return augmented
 
@@ -425,70 +421,98 @@ class TEDataset(Dataset):
         return inputs
 
 
-# Example usage
 if __name__ == "__main__":
-    from transformers import BertTokenizer
-
-    datasets_to_test = [
-        ("snli", "train"),
-        ("glue", "train", "mnli"),   # glue/mnli is the correct format
-        ("squad", "train")
-    ]
-
-    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-    max_samples = 5
-    all_data = []
-
-    for entry in datasets_to_test:
-        if len(entry) == 2:
-            dataset_name, split = entry
-            subset = None
-        else:
-            dataset_name, split, subset = entry
-
-        print(f"\n=== Loading dataset: {dataset_name}{'/' + subset if subset else ''} | split: {split} ===")
-        config = DatasetConfig(dataset_name=dataset_name, split=split, max_samples=max_samples)
-
+    def load_dataset_split(name, split, subset=None, max_samples=None):
+        config = DatasetConfig(
+            dataset_name=name,
+            dataset_path=subset,
+            split=split,
+            max_samples=max_samples,
+        )
         builder = DatasetBuilder(config)
+        builder.load_and_process()
+        return builder.data
 
-        # Special handling for SQuAD and glue/mnli
-        if dataset_name == "squad":
-            builder.process_squad_to_te()
-            builder.augment() # Try to augment the dataset
-        elif dataset_name == "glue" and subset == "mnli":
-            dataset = load_dataset(dataset_name, subset, split=split)
-            if max_samples:
-                dataset = dataset.select(range(max_samples))
-            processed = []
-            for example in dataset:
-                processed.append({
-                    "premise": example["premise"].strip(),
-                    "hypothesis": example["hypothesis"].strip(),
-                    "label": example["label"]
-                })
-            builder.data = processed
-        else:
-            builder.load_and_process()
+    def augment_with_llm(data, openai_key, tag_augmented=False):
+        augmented = Augmenter.generate_negated_contradictions_llm(data, openai_api_key=openai_key)
+        if tag_augmented:
+            for item in augmented:
+                item["augmented"] = True
+        return augmented
 
-        # Print examples
-        print(f"First 2 examples from {dataset_name}{'/' + subset if subset else ''}:")
-        for i, item in enumerate(builder.data[:2]):
-            print(f"[{i}] Premise: {item['premise']}")
-            print(f"    Hypothesis: {item['hypothesis']}")
-            print(f"    Label: {item['label']}\n")
+    def load_and_augment_squad_spacy(split, max_samples=None):
+        config = DatasetConfig(dataset_name="squad", split=split, max_samples=max_samples)
+        builder = DatasetBuilder(config)
+        builder.process_squad_to_te()
+        builder.augment()
+        return builder.data
 
-        builder.save()
-        all_data.append(builder.data)
+    def save_dataset(data, name, split, save_dir="./processed_datasets"):
+        os.makedirs(save_dir, exist_ok=True)
+        with open(os.path.join(save_dir, f"{name}_{split}.pkl"), "wb") as f:
+            pickle.dump(data, f)
+        print(f"[✓] Saved {name}_{split} with {len(data)} examples")
 
-        dataset = TEDataset(builder.data, tokenizer)
-        sample = dataset[0]
-        print("Tokenized sample:")
-        print(f"  input_ids[:10]: {sample['input_ids'][:10]}")
-        print(f"  attention_mask[:10]: {sample['attention_mask'][:10]}")
-        print(f"  label: {sample['labels']}")
+    
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    if not OPENAI_API_KEY:
+        raise ValueError("OPENAI_API_KEY is not set in the environment.")
+    MAX_SAMPLES = 50_000
 
-    # Optional: test merged dataset
-    print("\n=== Testing merge_datasets ===")
-    merged = DatasetBuilder.merge_datasets(all_data)
-    print(f"Merged dataset length: {len(merged)}")
-    print(f"Sample from merged: {merged[0]}")
+    # === Dataset 1: SNLI + MNLI (train + val) ===
+    for split in ["train", "validation"]:
+        print(f"Loading SNLI+MNLI {split} dataset...")
+        snli = load_dataset_split("snli", split, max_samples=MAX_SAMPLES)
+        mnli = load_dataset_split("glue", split, subset="mnli", max_samples=MAX_SAMPLES)
+        print(f"-> Merging...")
+        merged = DatasetBuilder.merge_datasets([snli, mnli])
+        save_dataset(merged, "snli_mnli", split)
+
+    # # === Dataset 2: SNLI + MNLI + SQuAD (with spaCy aug) ===
+    # for split in ["train", "validation"]:
+    #     print(f"Loading SNLI+MNLI+SQUaD {split} dataset...")
+    #     snli = load_dataset_split("snli", split, max_samples=MAX_SAMPLES)
+    #     mnli = load_dataset_split("glue", split, subset="mnli", max_samples=MAX_SAMPLES)
+    #     print(f"-> Augmenting SQUaD to negated TE...")
+    #     squad = load_and_augment_squad_spacy(split, max_samples=MAX_SAMPLES)
+    #     print(f"-> Merging...")
+    #     merged = DatasetBuilder.merge_datasets([snli, mnli, squad])
+    #     save_dataset(merged, "snli_mnli_squad_spacy", split)
+
+    # === Dataset 3: SNLI + MNLI + LLM-augmented (no SQuAD) ===
+    for split in ["train", "validation"]:
+        print(f"Loading SNLI+MNLI {split} dataset...")
+        snli = load_dataset_split("snli", split, max_samples=MAX_SAMPLES)
+        mnli = load_dataset_split("glue", split, subset="mnli", max_samples=MAX_SAMPLES)
+        original = DatasetBuilder.merge_datasets([snli, mnli])
+        print(f"-> Augmenting TE to negation using LLM...")
+        augmented = augment_with_llm(original, openai_key=OPENAI_API_KEY)
+        print(f"-> Merging...")
+        merged = DatasetBuilder.merge_datasets([original, augmented])
+        save_dataset(merged, "snli_mnli_llm", split)
+
+    # === Dataset 4: SNLI + MNLI test (with/without LLM aug), track augmentation ===
+    print(f"Loading SNLI+MNLI test dataset...")
+    snli_test = load_dataset_split("snli", "test", max_samples=MAX_SAMPLES)
+    mnli_test = load_dataset_split("glue", "test", subset="mnli", max_samples=MAX_SAMPLES)
+    test_original = DatasetBuilder.merge_datasets([snli_test, mnli_test])
+    print(f"Augmenting SNLI+MNLI test dataset with LLM...")
+    test_augmented = augment_with_llm(test_original, openai_key=OPENAI_API_KEY, tag_augmented=True)
+    print(f"-> Merging...")
+    test_merged = DatasetBuilder.merge_datasets([test_original, test_augmented])
+    save_dataset(test_merged, "snli_mnli_test_llm", "test")
+
+    # # Load the saved .pkl file
+    # with open("./processed_datasets/snli_mnli_train.pkl", "rb") as f:
+    #     data = pickle.load(f)
+
+    # # Initialize the tokenizer and TEDataset
+    # tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+    # dataset = TEDataset(data, tokenizer)
+
+    # # Show an example
+    # sample = dataset[0]
+    # print("Tokenized sample:")
+    # print(f"  input_ids[:10]: {sample['input_ids'][:10]}")
+    # print(f"  attention_mask[:10]: {sample['attention_mask'][:10]}")
+    # print(f"  label: {sample['labels']}")

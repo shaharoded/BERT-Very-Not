@@ -67,9 +67,16 @@ TO-DO
 
 1. Build your virtual environment:
 ```bash
-python -m venv venv
+python -m venv .venv
 venv\Scripts\activate  # On Windows
 pip install -r requirements.txt
+```
+
+2. Set your OpenAI key in the environment:
+```bash
+$env:OPENAI_API_KEY = "sk-..."
+ # Verify:
+echo $env:OPENAI_API_KEY
 ```
 
 ## References
