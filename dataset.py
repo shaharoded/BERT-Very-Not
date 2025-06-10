@@ -1,9 +1,12 @@
 import os
+import sys
 import pickle
 import random
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 import openai
+from openai import APIError, RateLimitError, APIConnectionError, AsyncOpenAI, OpenAI
+import asyncio
 import time
 from datasets import load_dataset  # Hugging Face datasets
 from tqdm import tqdm
@@ -19,6 +22,23 @@ from typing import List, Dict, Any
 # import spacy.cli
 # spacy.cli.download("en_core_web_sm")
 # nlp = spacy.load("en_core_web_sm")
+
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type
+)
+
+@retry(
+    wait=wait_exponential(multiplier=1, min=4, max=60),
+    stop=stop_after_attempt(5),
+    retry=(
+        retry_if_exception_type(APIError) |
+        retry_if_exception_type(APIConnectionError) |
+        retry_if_exception_type(RateLimitError)
+    )
+)
 
 
 @dataclass
@@ -88,33 +108,47 @@ class Augmenter:
                     break
 
         return augmented
-
+    
+    
     def generate_negated_contradictions_llm(
-            data: List[Dict[str, Any]],
-            openai_api_key: str,
-            model: str = "gpt-4o-mini"
-    ) -> List[Dict[str, Any]]:
+        data,
+        openai_api_key,
+        model="gpt-4o-mini",
+        checkpoint_path="llm_aug_checkpoint.pkl",
+        checkpoint_interval=100
+    ):
         """
-        Uses an LLM (OpenAI API) to generate contradiction examples by rewriting hypotheses into their negated form.
+        Generate contradiction examples from input data using OpenAI LLM.
 
-        Parameters:
-        - data: list of dicts with "premise", "hypothesis", and "label"
-        - openai_api_key: your OpenAI API key as a string
-        - model: OpenAI model name (default: gpt-4)
+        Args:
+            data (List[Dict[str, Any]]): Original TE examples (expects label 0 for entailment).
+            openai_api_key (str): OpenAI API key.
+            model (str): OpenAI chat model to use, default is "gpt-4o-mini".
+            checkpoint_path (str): Where to store intermediate augmentation results.
+            checkpoint_interval (int): How frequently to save progress.
 
         Returns:
-        - list of new contradiction-labeled examples
+            List[Dict[str, Any]]: New TE examples with label 2 (contradiction), LLM-generated.
         """
-        openai.api_key = openai_api_key
+        client = OpenAI(api_key=openai_api_key)
         augmented = []
+        start_idx = 0
 
-        for item in tqdm(data, desc="LLM Augmentation"):
+        # Try to load from checkpoint if it exists
+        if os.path.exists(checkpoint_path):
+            with open(checkpoint_path, "rb") as f:
+                checkpoint = pickle.load(f)
+                augmented = checkpoint["augmented"]
+                start_idx = checkpoint["idx"]
+            print(f"Resuming from checkpoint at index {start_idx}")
+
+        for idx in tqdm(range(start_idx, len(data)), initial=start_idx, total=len(data)):
+            item = data[idx]
             if item["label"] != 0:
                 continue
 
             premise = item["premise"]
             hypothesis = item["hypothesis"]
-
             prompt = (
                 "Rewrite the following hypothesis so that it contradicts the premise, "
                 "while keeping the grammar natural and fluent.\n\n"
@@ -123,24 +157,153 @@ class Augmenter:
                 f"Contradiction:"
             )
 
-            try:
-                response = openai.ChatCompletion.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.2,
-                )
-                negated_hypothesis = response["choices"][0]["message"]["content"].strip()
-                augmented.append({
-                    "premise": premise,
-                    "hypothesis": negated_hypothesis,
-                    "label": 2
-                })
+            # Retry logic for transient errors
+            for attempt in range(5):
+                try:
+                    response = client.chat.completions.create(
+                        model=model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.2,
+                        timeout=30
+                    )
+                    negated_hypothesis = response.choices[0].message.content.strip()
+                    augmented.append({
+                        "premise": premise,
+                        "hypothesis": negated_hypothesis,
+                        "label": 2
+                    })
+                    break  # success, exit retry loop
+                except RateLimitError as e:
+                    print(f"(X) Rate limit hit at idx {idx}, sleeping and retrying...")
+                    time.sleep(15)  # Wait before retrying
+                except APIError as e:
+                    print(f"(X) API error at idx {idx}, sleeping and retrying...")
+                    time.sleep(5)
+                except Exception as e:
+                    print(f"(X) Other error at idx {idx}: {e}, skipping.")
+                    break  # skip this item after logging
 
-            except Exception as e:
-                print(f"[OpenAI error] Skipped example due to: {e}")
-                time.sleep(1)
+            # Save checkpoint every N examples
+            if (idx + 1) % checkpoint_interval == 0:
+                with open(checkpoint_path, "wb") as f:
+                    pickle.dump({"augmented": augmented, "idx": idx + 1}, f)
+                print(f"-> Checkpoint saved at index {idx + 1}")
 
+        # Remove checkpoint if finished
+        if os.path.exists(checkpoint_path):
+            os.remove(checkpoint_path)
         return augmented
+    
+    @staticmethod
+    async def generate_negated_contradictions_llm_async(
+        data: List[Dict[str, Any]],
+        openai_api_key: str,
+        model: str = "gpt-4o-mini",
+        checkpoint_path: str = "llm_aug_checkpoint.pkl",
+        checkpoint_interval: int = 100
+        ) -> List[Dict[str, Any]]:
+        """
+        Asynchronously generate contradiction examples from input data using OpenAI LLM.
+        Handles out-of-order completion and maintains accurate checkpoints.
+
+        Args:
+            data (List[Dict[str, Any]]): Original TE examples (expects label 0 for entailment).
+            openai_api_key (str): OpenAI API key.
+            model (str): OpenAI chat model to use, default is "gpt-4o-mini".
+            checkpoint_path (str): Where to store intermediate augmentation results.
+            checkpoint_interval (int): How frequently to save progress.
+
+        Returns:
+            List[Dict[str, Any]]: New TE examples with label 2 (contradiction), LLM-generated.
+        """
+        client = AsyncOpenAI(api_key=openai_api_key)
+        
+        # Pre-filter label=0 indices
+        label_zero_indices = [idx for idx, item in enumerate(data) if item["label"] == 0]
+        
+        # Initialize checkpoint data
+        augmented = []
+        processed_indices = set()
+        
+        if os.path.exists(checkpoint_path):
+            with open(checkpoint_path, "rb") as f:
+                checkpoint = pickle.load(f)
+                augmented = checkpoint["augmented"]
+                processed_indices = set(checkpoint["processed_indices"])
+
+        semaphore = asyncio.Semaphore(10)  # Control concurrency
+
+        async def augment_example(idx: int, item: Dict[str, Any]):
+            """Process single example with infinite retries"""
+            if item["label"] != 0:
+                return (idx, None)
+
+            prompt = (
+                "Rewrite the following hypothesis so that it contradicts the premise, "
+                "while keeping the grammar natural and fluent.\n\n"
+                f"Premise: {item['premise']}\n"
+                f"Hypothesis: {item['hypothesis']}\n"
+                f"Contradiction:"
+            )
+
+            base_delay = 1  # Start with 1 second delay
+            max_delay = 60  # Maximum delay between retries
+            
+            while True:  # Infinite retry loop
+                try:
+                    async with semaphore:
+                        response = await client.chat.completions.create(
+                            model=model,
+                            messages=[{"role": "user", "content": prompt}],
+                            temperature=0.2,
+                            timeout=30
+                        )
+                        content = response.choices[0].message.content.strip()
+                        return (idx, {
+                            "premise": item["premise"],
+                            "hypothesis": content,
+                            "label": 2
+                        })
+                except (RateLimitError, APIError, asyncio.TimeoutError) as e:
+                    # Exponential backoff for retryable errors
+                    await asyncio.sleep(base_delay)
+                    base_delay = min(base_delay * 2, max_delay)
+                except Exception as e:
+                    print(f"(async) Non-retryable error on idx {idx}: {str(e)}")
+                    return (idx, None)  # Give up on permanent errors
+
+        # Create tasks only for unprocessed label=0 indices
+        tasks = [
+            augment_example(idx, data[idx])
+            for idx in label_zero_indices
+            if idx not in processed_indices
+        ]
+
+        last_saved_total = len(augmented)
+        with tqdm(total=len(label_zero_indices), initial=len(augmented), desc="LLM Augmentation") as pbar:
+            for future in asyncio.as_completed(tasks):
+                idx, result = await future
+                if result:
+                    augmented.append(result)
+                    processed_indices.add(idx)
+                    pbar.update(1)
+                    
+                    # Save checkpoint
+                    if (len(augmented) - last_saved_total) >= checkpoint_interval:
+                        with open(checkpoint_path, "wb") as f:
+                            pickle.dump({
+                                "augmented": augmented,
+                                "processed_indices": list(processed_indices),
+                                "total_processed": len(augmented)
+                            }, f)
+                        last_saved_total = len(augmented)
+
+        # Final cleanup
+        if os.path.exists(checkpoint_path):
+            os.remove(checkpoint_path)
+        
+        return augmented
+    
 
     def generate_entity_substitution(self, data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -433,8 +596,15 @@ if __name__ == "__main__":
         builder.load_and_process()
         return builder.data
 
-    def augment_with_llm(data, openai_key, tag_augmented=False):
-        augmented = Augmenter.generate_negated_contradictions_llm(data, openai_api_key=openai_key)
+    async def augment_with_llm(data, openai_key, tag_augmented=False, async_mode=False):
+        if async_mode:
+            augmented = await Augmenter.generate_negated_contradictions_llm_async(
+                data, openai_api_key=openai_key
+            )
+        else:
+            augmented = Augmenter.generate_negated_contradictions_llm(
+                data, openai_api_key=openai_key
+            )
         if tag_augmented:
             for item in augmented:
                 item["augmented"] = True
@@ -452,55 +622,91 @@ if __name__ == "__main__":
         with open(os.path.join(save_dir, f"{name}_{split}.pkl"), "wb") as f:
             pickle.dump(data, f)
         print(f"[✓] Saved {name}_{split} with {len(data)} examples")
-
     
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-    if not OPENAI_API_KEY:
-        raise ValueError("OPENAI_API_KEY is not set in the environment.")
-    MAX_SAMPLES = 50_000
+    def preview_augmented_examples(pkl_path, num_examples=5):
+        with open(pkl_path, "rb") as f:
+            data = pickle.load(f)
 
-    # === Dataset 1: SNLI + MNLI (train + val) ===
-    for split in ["train", "validation"]:
-        print(f"Loading SNLI+MNLI {split} dataset...")
-        snli = load_dataset_split("snli", split, max_samples=MAX_SAMPLES)
-        mnli = load_dataset_split("glue", split, subset="mnli", max_samples=MAX_SAMPLES)
+        # Filter for augmented examples if tagged
+        augmented = [ex for ex in data if ex.get("augmented") or ex.get("label") == 2]
+        original = [ex for ex in data if ex.get("label") == 0]
+
+        print(f"Loaded {len(data)} examples — {len(augmented)} are labeled as contradiction (possibly augmented)")
+
+        # Sample a few examples
+        for i in range(min(num_examples, len(augmented))):
+            aug = augmented[i]
+            print(f"\n[{i+1}]")
+            print(f"Premise:    {aug['premise']}")
+            print(f"Hypothesis: {aug['hypothesis']}")
+            print(f"Label:      {aug['label']} {'(augmented)' if aug.get('augmented') else ''}")
+
+            # Optionally, find matching original
+            if "augmented" in aug:
+                matches = [o for o in original if o["premise"] == aug["premise"]]
+                if matches:
+                    print(f"Original Hypothesis: {matches[0]['hypothesis']}")
+
+    async def main():
+        OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+        if not OPENAI_API_KEY:
+            raise ValueError("OPENAI_API_KEY is not set in the environment.")
+        TRAIN_SAMPLES = 50000
+        VAL_SAMPLES = 10000
+
+        # # === Dataset 1: SNLI + MNLI (train + val) ===
+        # for split in ["train", "validation"]:
+        #     print(f"Loading SNLI+MNLI {split} dataset...")
+        #     max_samples = TRAIN_SAMPLES if split == "train" else VAL_SAMPLES
+        #     snli = load_dataset_split("snli", split, max_samples=max_samples)
+        #     mnli = load_dataset_split("glue", split, subset="mnli", max_samples=max_samples)
+        #     print(f"-> Merging...")
+        #     merged = DatasetBuilder.merge_datasets([snli, mnli])
+        #     save_dataset(merged, "snli_mnli", split)
+
+        # # === Dataset 2: SNLI + MNLI + SQuAD (with spaCy aug) ===
+        # for split in ["train", "validation"]:
+        #     print(f"Loading SNLI+MNLI+SQUaD {split} dataset...")
+        #     max_samples = TRAIN_SAMPLES if split == "train" else VAL_SAMPLES
+        #     snli = load_dataset_split("snli", split, max_samples=max_samples)
+        #     mnli = load_dataset_split("glue", split, subset="mnli", max_samples=max_samples)
+        #     print(f"-> Augmenting SQUaD to negated TE...")
+        #     squad = load_and_augment_squad_spacy(split, max_samples=max_samples)
+        #     print(f"-> Merging...")
+        #     merged = DatasetBuilder.merge_datasets([snli, mnli, squad])
+        #     save_dataset(merged, "snli_mnli_squad_spacy", split)
+
+        # === Dataset 3: SNLI + MNLI + LLM-augmented (no SQuAD) ===
+        for split in ["train", "validation"]:
+            print(f"Loading SNLI+MNLI {split} dataset...")
+            max_samples = TRAIN_SAMPLES if split == "train" else VAL_SAMPLES
+            snli = load_dataset_split("snli", split, max_samples=max_samples)
+            mnli = load_dataset_split("glue", split, subset="mnli", max_samples=max_samples)
+            original = DatasetBuilder.merge_datasets([snli, mnli])
+            print(f"-> Augmenting TE to negation using LLM...")
+            augmented = await augment_with_llm(original, openai_key=OPENAI_API_KEY, async_mode=True)
+            print(f"-> Merging...")
+            merged = DatasetBuilder.merge_datasets([original, augmented])
+            save_dataset(merged, "snli_mnli_llm", split)
+
+        # === Dataset 4: SNLI + MNLI test (with/without LLM aug), track augmentation ===
+        print(f"Loading SNLI+MNLI test dataset...")
+        snli_test = load_dataset_split("snli", "test", max_samples=VAL_SAMPLES)
+        mnli_test = load_dataset_split("glue", "test", subset="mnli", max_samples=VAL_SAMPLES)
+        test_original = DatasetBuilder.merge_datasets([snli_test, mnli_test])
+        print(f"Augmenting SNLI+MNLI test dataset with LLM...")
+        test_augmented = await augment_with_llm(test_original, openai_key=OPENAI_API_KEY, tag_augmented=True)
         print(f"-> Merging...")
-        merged = DatasetBuilder.merge_datasets([snli, mnli])
-        save_dataset(merged, "snli_mnli", split)
+        test_merged = DatasetBuilder.merge_datasets([test_original, test_augmented])
+        save_dataset(test_merged, "snli_mnli_test_llm", "test")
 
-    # # === Dataset 2: SNLI + MNLI + SQuAD (with spaCy aug) ===
-    # for split in ["train", "validation"]:
-    #     print(f"Loading SNLI+MNLI+SQUaD {split} dataset...")
-    #     snli = load_dataset_split("snli", split, max_samples=MAX_SAMPLES)
-    #     mnli = load_dataset_split("glue", split, subset="mnli", max_samples=MAX_SAMPLES)
-    #     print(f"-> Augmenting SQUaD to negated TE...")
-    #     squad = load_and_augment_squad_spacy(split, max_samples=MAX_SAMPLES)
-    #     print(f"-> Merging...")
-    #     merged = DatasetBuilder.merge_datasets([snli, mnli, squad])
-    #     save_dataset(merged, "snli_mnli_squad_spacy", split)
-
-    # === Dataset 3: SNLI + MNLI + LLM-augmented (no SQuAD) ===
-    for split in ["train", "validation"]:
-        print(f"Loading SNLI+MNLI {split} dataset...")
-        snli = load_dataset_split("snli", split, max_samples=MAX_SAMPLES)
-        mnli = load_dataset_split("glue", split, subset="mnli", max_samples=MAX_SAMPLES)
-        original = DatasetBuilder.merge_datasets([snli, mnli])
-        print(f"-> Augmenting TE to negation using LLM...")
-        augmented = augment_with_llm(original, openai_key=OPENAI_API_KEY)
-        print(f"-> Merging...")
-        merged = DatasetBuilder.merge_datasets([original, augmented])
-        save_dataset(merged, "snli_mnli_llm", split)
-
-    # === Dataset 4: SNLI + MNLI test (with/without LLM aug), track augmentation ===
-    print(f"Loading SNLI+MNLI test dataset...")
-    snli_test = load_dataset_split("snli", "test", max_samples=MAX_SAMPLES)
-    mnli_test = load_dataset_split("glue", "test", subset="mnli", max_samples=MAX_SAMPLES)
-    test_original = DatasetBuilder.merge_datasets([snli_test, mnli_test])
-    print(f"Augmenting SNLI+MNLI test dataset with LLM...")
-    test_augmented = augment_with_llm(test_original, openai_key=OPENAI_API_KEY, tag_augmented=True)
-    print(f"-> Merging...")
-    test_merged = DatasetBuilder.merge_datasets([test_original, test_augmented])
-    save_dataset(test_merged, "snli_mnli_test_llm", "test")
+        # === Previewing after main completes ===
+        preview_augmented_examples("./processed_datasets/snli_mnli_test_llm_test.pkl", num_examples=5)
+        
+    if sys.platform.startswith('win'):
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    
+    asyncio.run(main())
 
     # # Load the saved .pkl file
     # with open("./processed_datasets/snli_mnli_train.pkl", "rb") as f:
@@ -509,10 +715,3 @@ if __name__ == "__main__":
     # # Initialize the tokenizer and TEDataset
     # tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
     # dataset = TEDataset(data, tokenizer)
-
-    # # Show an example
-    # sample = dataset[0]
-    # print("Tokenized sample:")
-    # print(f"  input_ids[:10]: {sample['input_ids'][:10]}")
-    # print(f"  attention_mask[:10]: {sample['attention_mask'][:10]}")
-    # print(f"  label: {sample['labels']}")

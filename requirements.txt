@@ -2,5 +2,7 @@ datasets
 tqdm
 torch
 transformers
-openai==0.28
+openai>=1.0.0
+tenacity
+aiohttp
 # spacy
