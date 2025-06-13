@@ -44,22 +44,30 @@ This conversion is a heuristic:
 ---
 
 ## Negation Augmentation Methods
-TO-DO 
+1. `spacy` method, designed for the SQuaD TE pairs, is the "lighter" baseline method, injecting negation into answers and replacing entities in entailment pairs turning them into contradiction.
+2. LLM-based - will pass the pair through an instruct LLM engine (`gpt-4o-mini`) that will create an alternative hypothesis, neutrally grammered, negated to the original pair.
+
+For resources concerns the base dataset is always ~100K records, and the augmentation adds an additional 30-40K records.
 
 ---
 
-## Next Steps
+## Steps
 
 1. **Data Preparation**:
    - Obtain and preprocess **negation-augmented TE datasets** (e.g., modifying MNLI/SNLI hypotheses to include negations).
-   - Optionally convert QA examples into TE-style pairs (premise and hypothesis).
+   -  Convert QA examples into TE-style pairs (premise and hypothesis) and negate them.
+
+   Final prep (appears in the __main__ of `dataset.py`) results in 4 datasets:
+   - TRAIN+VAL subset from MNLI+SNLI (~100K records train, ~20k records val)
+   - TRAIN+VAL subset from MNLI+SNLI+SQuaD (as TE) with augmentation on SQuaD (~130K records, ~26k records val)
+   - TRAIN+VAL subset from MNLI+SNLI with augmentation on all entailment pairs (~140K records, ~26k records val)
+   - TEST subset from MNLI+SNLI with augmentation on all entailment pairs (~26k records)
 
 2. **Fine-Tuning**:
-   - Fine-tune BERT for **entailment classification** using this data.
+   - Fine-tune BERT for **entailment classification** using these datasets.
 
 3. **Evaluation**:
-   - Evaluate on standard TE datasets (e.g., MNLI/SNLI dev/test splits).
-   - Optionally test the model’s performance on a subset of QA-to-TE converted examples.
+   - Evaluate on negated TE datasets (e.g., dataset 4 in step 1) to assert quality on negated examples compared to their real examples.
 
 ---
 
@@ -90,4 +98,4 @@ echo $env:OPENAI_API_KEY
 ---
 
 **Contributors**:  
-Anton Dzega, Shahar Oded, Lior Broide, Yuval Haim
+Shahar Oded, Anton Dzega, Lior Broide, Yuval Haim
