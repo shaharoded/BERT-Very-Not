@@ -18,10 +18,10 @@ from transformers import BertTokenizer
 import random
 from typing import List, Dict, Any
 
-# import spacy
-# import spacy.cli
-# spacy.cli.download("en_core_web_sm")
-# nlp = spacy.load("en_core_web_sm")
+import spacy
+import spacy.cli
+spacy.cli.download("en_core_web_sm")
+nlp = spacy.load("en_core_web_sm")
 
 from tenacity import (
     retry,
@@ -654,27 +654,27 @@ if __name__ == "__main__":
         TRAIN_SAMPLES = 50000
         VAL_SAMPLES = 10000
 
-        # # === Dataset 1: SNLI + MNLI (train + val) ===
-        # for split in ["train", "validation"]:
-        #     print(f"Loading SNLI+MNLI {split} dataset...")
-        #     max_samples = TRAIN_SAMPLES if split == "train" else VAL_SAMPLES
-        #     snli = load_dataset_split("snli", split, max_samples=max_samples)
-        #     mnli = load_dataset_split("glue", split, subset="mnli", max_samples=max_samples)
-        #     print(f"-> Merging...")
-        #     merged = DatasetBuilder.merge_datasets([snli, mnli])
-        #     save_dataset(merged, "snli_mnli", split)
+        # === Dataset 1: SNLI + MNLI (train + val) ===
+        for split in ["train", "validation"]:
+            print(f"Loading SNLI+MNLI {split} dataset...")
+            max_samples = TRAIN_SAMPLES if split == "train" else VAL_SAMPLES
+            snli = load_dataset_split("snli", split, max_samples=max_samples)
+            mnli = load_dataset_split("glue", split, subset="mnli", max_samples=max_samples)
+            print(f"-> Merging...")
+            merged = DatasetBuilder.merge_datasets([snli, mnli])
+            save_dataset(merged, "snli_mnli", split)
 
-        # # === Dataset 2: SNLI + MNLI + SQuAD (with spaCy aug) ===
-        # for split in ["train", "validation"]:
-        #     print(f"Loading SNLI+MNLI+SQUaD {split} dataset...")
-        #     max_samples = TRAIN_SAMPLES if split == "train" else VAL_SAMPLES
-        #     snli = load_dataset_split("snli", split, max_samples=max_samples)
-        #     mnli = load_dataset_split("glue", split, subset="mnli", max_samples=max_samples)
-        #     print(f"-> Augmenting SQUaD to negated TE...")
-        #     squad = load_and_augment_squad_spacy(split, max_samples=max_samples)
-        #     print(f"-> Merging...")
-        #     merged = DatasetBuilder.merge_datasets([snli, mnli, squad])
-        #     save_dataset(merged, "snli_mnli_squad_spacy", split)
+        # === Dataset 2: SNLI + MNLI + SQuAD (with spaCy aug) ===
+        for split in ["train", "validation"]:
+            print(f"Loading SNLI+MNLI+SQUaD {split} dataset...")
+            max_samples = TRAIN_SAMPLES if split == "train" else VAL_SAMPLES
+            snli = load_dataset_split("snli", split, max_samples=max_samples)
+            mnli = load_dataset_split("glue", split, subset="mnli", max_samples=max_samples)
+            print(f"-> Augmenting SQUaD to negated TE...")
+            squad = load_and_augment_squad_spacy(split, max_samples=max_samples)
+            print(f"-> Merging...")
+            merged = DatasetBuilder.merge_datasets([snli, mnli, squad])
+            save_dataset(merged, "snli_mnli_squad_spacy", split)
 
         # === Dataset 3: SNLI + MNLI + LLM-augmented (no SQuAD) ===
         for split in ["train", "validation"]:
@@ -684,7 +684,7 @@ if __name__ == "__main__":
             mnli = load_dataset_split("glue", split, subset="mnli", max_samples=max_samples)
             original = DatasetBuilder.merge_datasets([snli, mnli])
             print(f"-> Augmenting TE to negation using LLM...")
-            augmented = await augment_with_llm(original, openai_key=OPENAI_API_KEY, async_mode=True)
+            augmented = await augment_with_llm(original, openai_key=OPENAI_API_KEY, tag_augmented=True, async_mode=True)
             print(f"-> Merging...")
             merged = DatasetBuilder.merge_datasets([original, augmented])
             save_dataset(merged, "snli_mnli_llm", split)
@@ -695,7 +695,7 @@ if __name__ == "__main__":
         mnli_test = load_dataset_split("glue", "test", subset="mnli", max_samples=VAL_SAMPLES)
         test_original = DatasetBuilder.merge_datasets([snli_test, mnli_test])
         print(f"Augmenting SNLI+MNLI test dataset with LLM...")
-        test_augmented = await augment_with_llm(test_original, openai_key=OPENAI_API_KEY, tag_augmented=True)
+        test_augmented = await augment_with_llm(test_original, openai_key=OPENAI_API_KEY, tag_augmented=True, async_mode=True)
         print(f"-> Merging...")
         test_merged = DatasetBuilder.merge_datasets([test_original, test_augmented])
         save_dataset(test_merged, "snli_mnli_test_llm", "test")

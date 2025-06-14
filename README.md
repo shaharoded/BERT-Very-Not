@@ -59,9 +59,11 @@ For resources concerns the base dataset is always ~100K records, and the augment
 
    Final prep (appears in the __main__ of `dataset.py`) results in 4 datasets:
    - TRAIN+VAL subset from MNLI+SNLI (~100K records train, ~20k records val)
-   - TRAIN+VAL subset from MNLI+SNLI+SQuaD (as TE) with augmentation on SQuaD (~130K records, ~26k records val)
-   - TRAIN+VAL subset from MNLI+SNLI with augmentation on all entailment pairs (~140K records, ~26k records val)
-   - TEST subset from MNLI+SNLI with augmentation on all entailment pairs (~26k records)
+   - TRAIN+VAL subset from MNLI+SNLI+SQuaD (as TE) with augmentation on SQuaD (~135K records, ~26k records val)
+   - TRAIN+VAL subset from MNLI+SNLI with augmentation on all entailment pairs (~135K records, ~26k records val)
+   - TEST subset from MNLI+SNLI with augmentation on all entailment pairs (~23k records)
+
+   NOTE: We highky recommend using `async=True` for every LLM based augmentation. 
 
 2. **Fine-Tuning**:
    - Fine-tune BERT for **entailment classification** using these datasets.
