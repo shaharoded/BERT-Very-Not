@@ -259,8 +259,6 @@ See `requirements.txt` for full dependencies.
 - Hosseini et al., Understanding by Understanding Not: Modeling Negation in Language Models (2023)
 - Wang et al., GLUE: A Multi-Task Benchmark and Analysis Platform for Natural Language Understanding (2018)
 - Rajpurkar et al., SQuAD: 100,000+ Questions for Machine Comprehension of Text (2016)
-- Zhao et al., Contrastive Learning for Logical Negation in Language Models (2024)
-- Min et al., Counterfactual Data Augmentation for Robust QA under Negation (2023)
 
 ---
 
