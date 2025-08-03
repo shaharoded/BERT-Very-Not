@@ -2,6 +2,8 @@
 
 This project builds on the **Understanding by Understanding Not** paper by Hosseini et al. (2023), aiming to improve BERT's ability to handle **negation** in **textual entailment (TE)** tasks. Unlike the original work, which introduced unlikelihood training to reduce incorrect completions in negated contexts, our focus is on explicit **fine-tuning** for entailment classification tasks that include negation.
 
+We composed a short draft paper for this project, available on this [link](https://drive.google.com/file/d/1FuiPyn0atB0gzalFQoQckduyMQjCSaLj/view?usp=sharing)
+
 ---
 
 ## Project Goal
