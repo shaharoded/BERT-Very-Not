@@ -1,4 +1,4 @@
 /.venv
-/processed_datasets
+*.pkl
 secret_keys.py
 llm_aug_checkpoint*

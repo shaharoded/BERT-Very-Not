@@ -98,7 +98,8 @@ class Augmenter:
             ents = [ent.text for ent in doc.ents if ent.label_ in {"PERSON", "ORG", "GPE", "DATE"}]
 
             for ent in ents:
-                if ent in hypothesis:
+                # Negate here only pairs that were not negated already
+                if ent in hypothesis and f"not {ent}" not in hypothesis:
                     negated_hypothesis = hypothesis.replace(ent, f"not {ent}")
                     augmented.append({
                         "premise": premise,
@@ -405,7 +406,7 @@ class DatasetBuilder:
 
         self.data = processed
 
-    def augment(self):
+    def augment_squad(self):
         """
         Augments the current dataset with contradiction examples.
 
@@ -426,6 +427,7 @@ class DatasetBuilder:
     def process_squad_to_te(self):
         """
         Convert SQuAD dataset entries into textual entailment-style pairs.
+        The function will create entailment pairs, and will directly negated them using "not_{correct answer}"
 
         Each example becomes:
         - Premise: original context passage
@@ -450,17 +452,25 @@ class DatasetBuilder:
             question = example.get("question", "")
             answers = example.get("answers", {}).get("text", [])
 
-            # Default to contradiction
-            label = 2
-            for ans in answers:
-                if ans.strip() and ans.strip() in context:
-                    label = 0  # entailment if answer in question
-                    break
+            if not answers:
+                continue
 
+            # Construct entailment (Q + A → statement)
+            correct_answer = answers[0].strip()
+            entailment_hyp = f"{question} Answer: {correct_answer}."
             processed.append({
                 "premise": context.strip(),
-                "hypothesis": question.strip(),
-                "label": label
+                "hypothesis": entailment_hyp,
+                "label": 0
+            })
+
+            # Construct a simple contradiction by substituting or negating
+            fake_answer = "not " + correct_answer
+            contradiction_hyp = f"{question} Answer: {fake_answer}."
+            processed.append({
+                "premise": context.strip(),
+                "hypothesis": contradiction_hyp,
+                "label": 2
             })
 
         self.data = processed
@@ -614,7 +624,7 @@ if __name__ == "__main__":
         config = DatasetConfig(dataset_name="squad", split=split, max_samples=max_samples)
         builder = DatasetBuilder(config)
         builder.process_squad_to_te()
-        builder.augment()
+        builder.augment_squad()
         return builder.data
 
     def save_dataset(data, name, split, save_dir="./processed_datasets"):

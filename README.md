@@ -153,20 +153,21 @@ For resources concerns the base dataset is always ~100K records, and the augment
 
 ```
 Bert-project/
-├── dataset.py                          # Dataset creation and augmentation
-├── train_baseline_model.py             # Baseline BERT training (SNLI+MNLI)
-├── train_spacy_augmented_model.py      # SpaCy augmented training
-├── train_llm_augmented_model.py        # LLM augmented training  
-├── evaluate_all_models.py              # Comprehensive model evaluation
-├── processed_datasets/                 # Generated dataset files (available on Google Drive)
+├── dataset.py                               # Dataset creation and augmentation
+├── train_baseline_model.py                  # Baseline BERT training (SNLI+MNLI)
+├── train_spacy_augmented_model.py           # SpaCy augmented training
+├── train_llm_augmented_model.py             # LLM augmented training  
+├── evaluate_all_models.py                   # Comprehensive model evaluation
+├── processed_datasets/                      # Generated dataset files (available on Google Drive)
 │   ├── snli_mnli_train.pkl
 │   ├── snli_mnli_validation.pkl
 │   ├── snli_mnli_squad_spacy_train.pkl
 │   ├── snli_mnli_squad_spacy_validation.pkl
 │   ├── snli_mnli_llm_train.pkl
 │   ├── snli_mnli_llm_validation.pkl
-│   └── snli_mnli_test_llm_test.pkl
-├── evaluation_results/                 # Evaluation outputs
+│   ├── snli_mnli_test_llm_test.pkl
+│   └── testing_augmentation.ipynb           # Inspection module to assess the augmentation quality
+├── evaluation_results/                      # Evaluation outputs
 └── requirements.txt
 ```
 
